@@ -50,7 +50,9 @@ LazyPool :: struct {
 	using _:     struct #align (64) {
 		global_wakeup: notifier.Notifier,
 	},
-	running:     bool,
+	using _:     struct #align (64) {
+		running: bool,
+	},
 	workers:     []Worker,
 	deques:      []WorkerDeque,
 	threads:     []^thread.Thread,
