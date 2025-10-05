@@ -23,13 +23,25 @@ Better performance than [core:thread.Pool](https://pkg.odin-lang.org/core/thread
 - your jobs produce more jobs
   - (to take advantage of work stealing)
 
-You can get improved multithreading performance like this (`-o:speed`):
+You can get improved multithreading performance like this (with `-o:speed`):
 
 ![Throughput comparison](./tps.png)
 
 However if you run long-running jobs or few jobs, lazy_pool performs about the same as (or worse than) the core thread pool.
 
 Implementation based on https://ieeexplore.ieee.org/document/9359172
+
+### simple_pool (not committed)
+
+Like lazy_pool but without work stealing. Like core thread pool but without mutexes.
+
+High contention on global MPMC queue meant it performed slightly worse than lazy_pool.
+
+### busy_pool (not committed)
+
+Like simple_pool but uses atomic spinlock instead of notifier.
+
+Did not perform better than lazy_pool.
 
 ## lazy_pool/parallel_for
 
@@ -45,13 +57,17 @@ parallel_for(pool, slice, 8192, proc(i: int, p: ^int) {})
 
 // data
 data: Data = {...}
-parallel_for(pool, 1_000_000, 8192, proc(i: int, data: Data), data)
+parallel_for(pool, 1_000_000, 8192, proc(i: int, data: ^Data), &data)
 
 // one call per chunk
 parallel_for(pool, 1_000_000, 8192, proc(start: int, end: int, data: Data), data)
 ```
 
 ![parallel_for speed-up](./parallel_for.png)
+
+## lazy_pool/parallel_quicksort
+
+Example of using lazy_pool to implement a parallel quicksort.
 
 ## deque
 
