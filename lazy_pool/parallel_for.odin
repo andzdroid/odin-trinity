@@ -2,12 +2,14 @@ package lazy_pool
 
 import "core:time"
 
+@(private = "file")
 ParallelForJob :: struct($T: typeid) {
 	fn:    proc(_: ^T, start: int),
 	ctx:   ^T,
 	start: int,
 }
 
+@(private = "file")
 make_parallel_for_job :: proc(wrapped: ^ParallelForJob($T)) -> Job {
 	run := proc(wrapped: ^ParallelForJob(T)) {
 		wrapped.fn(wrapped.ctx, wrapped.start)
@@ -15,6 +17,7 @@ make_parallel_for_job :: proc(wrapped: ^ParallelForJob($T)) -> Job {
 	return make_job(run, wrapped)
 }
 
+@(private = "file")
 ChunkDispatchCtx :: struct($U: typeid) {
 	run_chunk:  proc(ctx: ^U, start: int, end: int),
 	user_ctx:   ^U,
@@ -71,14 +74,9 @@ schedule_parallel_chunks :: proc(
 	group_wait(&group)
 }
 
+@(private = "file")
 ElementForCtx :: struct {
 	per_index_callback: proc(i: int),
-}
-
-element_chunk_runner :: proc(ctx: ^ElementForCtx, start: int, end: int) {
-	for index in start ..< end {
-		ctx.per_index_callback(index)
-	}
 }
 
 parallel_for_simple :: proc(
@@ -91,25 +89,18 @@ parallel_for_simple :: proc(
 	element_ctx := ElementForCtx {
 		per_index_callback = callback,
 	}
-	schedule_parallel_chunks(
-		pool,
-		count,
-		chunk_size,
-		&element_ctx,
-		element_chunk_runner,
-		allocator,
-	)
+	run_chunk := proc(ctx: ^ElementForCtx, start: int, end: int) {
+		for index in start ..< end {
+			ctx.per_index_callback(index)
+		}
+	}
+	schedule_parallel_chunks(pool, count, chunk_size, &element_ctx, run_chunk, allocator)
 }
 
+@(private = "file")
 ElementForDataCtx :: struct($D: typeid) {
 	per_index_with_data: proc(i: int, data: ^D),
 	data:                ^D,
-}
-
-element_data_chunk_runner :: proc(ctx: ^ElementForDataCtx($D), start: int, end: int) {
-	for index in start ..< end {
-		ctx.per_index_with_data(index, ctx.data)
-	}
 }
 
 parallel_for_data :: proc(
@@ -132,13 +123,10 @@ parallel_for_data :: proc(
 	schedule_parallel_chunks(pool, count, chunk_size, &element_ctx, run_chunk, allocator)
 }
 
+@(private = "file")
 ChunkForDataCtx :: struct($D: typeid) {
 	chunk_callback: proc(start: int, end: int, data: ^D),
 	data:           ^D,
-}
-
-chunk_data_runner :: proc(ctx: ^ChunkForDataCtx($D), start: int, end: int) {
-	ctx.chunk_callback(start, end, ctx.data)
 }
 
 parallel_for_chunk :: proc(
@@ -159,11 +147,13 @@ parallel_for_chunk :: proc(
 	schedule_parallel_chunks(pool, count, chunk_size, &chunk_ctx, run_chunk, allocator)
 }
 
+@(private = "file")
 ForEachCtx :: struct($T: typeid) {
 	items:    []T,
 	callback: proc(index: int, item: ^T),
 }
 
+@(private = "file")
 parallel_for_each :: proc(
 	pool: ^LazyPool,
 	items: []$T,
@@ -180,7 +170,7 @@ parallel_for_each :: proc(
 			c.callback(index, &c.items[index])
 		}
 	}
-	schedule_parallel_chunks(pool, len(items), max(1, chunk_size), &ctx, run_chunk, allocator)
+	schedule_parallel_chunks(pool, len(items), chunk_size, &ctx, run_chunk, allocator)
 }
 
 parallel_for :: proc {

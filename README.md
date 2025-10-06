@@ -78,6 +78,30 @@ parallel_for(pool, 1_000_000, 8192, proc(start: int, end: int, data: Data), data
 
 ![parallel_for speed-up](./parallel_for.png)
 
+## lazy_pool/parallel_map
+
+```odin
+parallel_map(pool, slice, chunk_size, proc(val: int) -> int {
+  return val * 2
+})
+```
+
+## lazy_pool/parallel_reduce
+
+```odin
+// Reduce to same type as input
+parallel_reduce(pool, slice, chunk_size, proc(acc: int, item: int) -> int {
+  return acc + item
+})
+
+// Reduce to another type - extra merge fn is required
+parallel_reduce(pool, slice, chunk_size, proc(acc: int, item: bool) -> int {
+  return item ? acc + 3 : acc - 2
+}, proc(acc: int, acc2: int) -> int {
+  return acc + acc2
+})
+```
+
 ## parallel_quicksort
 
 Example of using lazy_pool to implement a parallel quicksort.
