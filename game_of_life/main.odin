@@ -133,7 +133,6 @@ main :: proc() {
 	use_parallel := true
 	step_ms: time.Duration = 0
 	cells_per_sec: f64 = 0
-	chunks_per_sec: f64 = 0
 	last_display_update: time.Time = time.now()
 
 	for !rl.WindowShouldClose() {
@@ -170,10 +169,8 @@ main :: proc() {
 				now := time.now()
 				last_display_update = now
 				cells := GRID_WIDTH * GRID_HEIGHT
-				num_chunks := use_parallel ? CHUNKS : 1
 				step_ms = elapsed_ms
 				cells_per_sec = f64(cells) / time.duration_seconds(elapsed_ms)
-				chunks_per_sec = f64(num_chunks) / time.duration_seconds(elapsed_ms)
 			}
 		}
 
@@ -196,13 +193,6 @@ main :: proc() {
 		rl.DrawText(mode_text, 10, 58, 18, rl.WHITE)
 		rl.DrawText(rl.TextFormat("Step: %.2f ms", step_ms), 10, 82, 18, rl.WHITE)
 		rl.DrawText(rl.TextFormat("Cells/s: %s", abbreviate(cells_per_sec)), 10, 106, 18, rl.WHITE)
-		rl.DrawText(
-			rl.TextFormat("Chunks/s: %s", abbreviate(chunks_per_sec)),
-			10,
-			130,
-			18,
-			rl.WHITE,
-		)
 		rl.EndDrawing()
 	}
 }

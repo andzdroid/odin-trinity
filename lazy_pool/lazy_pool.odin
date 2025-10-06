@@ -23,16 +23,25 @@ WorkerDeque :: deque.Deque(Job, MAX_JOBS_PER_WORKER)
 GlobalQueue :: mpmc.Queue(Job, MAX_JOBS_PER_WORKER)
 
 Job :: struct {
-	run:  proc(ctx: rawptr, data: rawptr),
-	ctx:  rawptr,
-	data: rawptr,
+	run:   proc(ctx: rawptr, data: rawptr),
+	ctx:   rawptr,
+	data:  rawptr,
+	group: ^JobGroup,
 }
 
-make_job :: proc(fn: proc(_: ^$T), data: ^T) -> Job {
+make_job :: proc(fn: proc(_: ^$T), data: ^T, group: ^JobGroup = nil) -> Job {
 	thunk := proc(ctx: rawptr, p: rawptr) {
 		(cast(proc(_: ^T))ctx)(cast(^T)p)
 	}
-	return Job{run = thunk, ctx = rawptr(fn), data = data}
+	return Job{run = thunk, ctx = rawptr(fn), data = data, group = group}
+}
+
+JobGroup :: struct {
+	pool:    ^LazyPool,
+	wake:    notifier.Notifier,
+	using _: struct #align (64) {
+		pending: i64,
+	},
 }
 
 Worker :: struct {
@@ -92,21 +101,53 @@ pool_destroy :: proc(pool: ^LazyPool, allocator := context.allocator) {
 	delete(pool.threads, allocator)
 }
 
+spawn :: proc {
+	pool_submit,
+	worker_submit,
+	group_submit,
+}
+
+// Enqueue a job onto the global job queue.
 pool_submit :: proc(pool: ^LazyPool, j: Job) -> bool {
+	if j.group != nil {
+		add(&j.group.pending, 1, .Relaxed)
+	}
 	ok := mpmc.mpmc_enqueue(&pool.tasks, j)
 	if ok {
 		notifier.notify_one(&pool.global_wakeup)
+	} else if j.group != nil {
+		add(&j.group.pending, -1, .Relaxed)
 	}
 	return ok
 }
 
-// Enqueue a job onto the current worker's local deque.
+// Enqueue a job onto the current worker's local job queue.
+// Faster than pool_submit.
 // Returns false if not called from a worker thread.
 worker_submit :: proc(j: Job) -> bool {
 	if current_worker == nil {
 		return false
 	}
-	return deque.deque_push(&current_worker.pool.deques[current_worker.id], j)
+	if j.group != nil {
+		add(&j.group.pending, 1, .Relaxed)
+	}
+	ok := deque.deque_push(&current_worker.pool.deques[current_worker.id], j)
+	if !ok && j.group != nil {
+		add(&j.group.pending, -1, .Relaxed)
+	}
+	return ok
+}
+
+// Enqueue a job as part of a job group.
+// Will automatically pick between pool_submit and worker_submit.
+group_submit :: proc(group: ^JobGroup, j: Job) -> bool {
+	j := j
+	j.group = group
+	if current_worker == nil {
+		return pool_submit(group.pool, j)
+	} else {
+		return worker_submit(j)
+	}
 }
 
 @(private = "file")
@@ -148,6 +189,11 @@ exploit_task :: proc(current_job: ^Job, has_job: ^bool, worker: ^Worker) {
 
 	for {
 		current_job.run(current_job.ctx, current_job.data)
+		if current_job.group != nil {
+			if add(&current_job.group.pending, -1, .Release) == 1 {
+				notifier.notify_all(&current_job.group.wake)
+			}
+		}
 		if next_job, ok2 := deque.deque_pop(worker_deque); ok2 {
 			current_job^ = next_job
 			has_job^ = true
@@ -260,6 +306,20 @@ wait_for_task :: proc(current_job: ^Job, has_job: ^bool, worker: ^Worker) -> boo
 	return true
 }
 
+group_wait :: proc(g: ^JobGroup) {
+	for {
+		if load(&g.pending, .Acquire) == 0 {
+			break
+		}
+		epoch := notifier.prepare_wait(&g.wake)
+		if load(&g.pending, .Acquire) == 0 {
+			notifier.cancel_wait(&g.wake)
+			break
+		}
+		notifier.commit_wait(&g.wake, epoch)
+	}
+}
+
 pool_start :: proc(pool: ^LazyPool) {
 	for t in pool.threads {
 		thread.start(t)
@@ -281,6 +341,11 @@ pool_finish :: proc(pool: ^LazyPool) {
 	for {
 		task := mpmc.mpmc_dequeue(&pool.tasks) or_break
 		task.run(task.ctx, task.data)
+		if task.group != nil {
+			if add(&task.group.pending, -1, .Release) == 1 {
+				notifier.notify_all(&task.group.wake)
+			}
+		}
 	}
 
 	store(&pool.running, false, .Release)

@@ -1,6 +1,5 @@
 package lazy_pool
 
-import notifier "../notifier"
 import "core:time"
 
 ParallelForJob :: struct($T: typeid) {
@@ -21,8 +20,6 @@ ChunkDispatchCtx :: struct($U: typeid) {
 	user_ctx:   ^U,
 	count:      int,
 	chunk_size: int,
-	remaining:  ^i64,
-	done:       ^notifier.Notifier,
 }
 
 schedule_parallel_chunks :: proc(
@@ -38,24 +35,20 @@ schedule_parallel_chunks :: proc(
 	}
 
 	chunk_size := max(1, chunk_size)
-	remaining := i64((count + chunk_size - 1) / chunk_size)
-	done: notifier.Notifier
+	group := JobGroup {
+		pool = pool,
+	}
 
 	dispatch_ctx := ChunkDispatchCtx(U) {
 		run_chunk  = run_chunk,
 		user_ctx   = user_ctx,
 		count      = count,
 		chunk_size = chunk_size,
-		remaining  = &remaining,
-		done       = &done,
 	}
 
 	submit_chunk := proc(ctx: ^ChunkDispatchCtx(U), start: int) {
 		end := min(start + ctx.chunk_size, ctx.count)
 		ctx.run_chunk(ctx.user_ctx, start, end)
-		if add(ctx.remaining, -1, .Acq_Rel) == 1 {
-			notifier.notify_one(ctx.done)
-		}
 	}
 
 	num_chunks := (count + chunk_size - 1) / chunk_size
@@ -70,24 +63,12 @@ schedule_parallel_chunks :: proc(
 			start = chunk_start,
 		}
 		job := make_parallel_for_job(&wrappers[wrapper_index])
-		if !worker_submit(job) {
-			for !pool_submit(pool, job) {
-				time.sleep(10 * time.Microsecond)
-			}
+		for !spawn(&group, job) {
+			time.sleep(10 * time.Microsecond)
 		}
 	}
 
-	if load(dispatch_ctx.remaining, .Acquire) == 0 {
-		return
-	}
-
-	// Wait until last chunk completes
-	epoch := notifier.prepare_wait(&done)
-	if load(dispatch_ctx.remaining, .Acquire) == 0 {
-		notifier.cancel_wait(&done)
-		return
-	}
-	notifier.commit_wait(&done, epoch)
+	group_wait(&group)
 }
 
 ElementForCtx :: struct {

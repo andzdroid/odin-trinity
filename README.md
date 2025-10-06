@@ -11,9 +11,22 @@ pool := new(LazyPool)
 pool_init(pool, workers)
 pool_start(pool)
 
-WorkerArgs :: struct {...}
-worker :: proc(args: WorkerArgs) {...}
-pool_submit(pool, make_job(worker, args))
+// run one job
+spawn(pool, make_job(job_fn, &args))
+
+// run multiple jobs and wait for all to finish
+group := JobGroup{pool = pool}
+spawn(&group, make_job(job_fn, &args))
+spawn(&group, make_job(job_fn, &args))
+spawn(&group, make_job(job_fn, &args))
+group_wait(&group)
+
+job_fn :: proc(args: ^JobArgs) {
+  if args.spawn_more {
+    // run more jobs from within jobs
+    spawn(make_job(worker, &args))
+  }
+}
 ```
 
 Better performance than [core:thread.Pool](https://pkg.odin-lang.org/core/thread/#Pool) if:
@@ -65,7 +78,7 @@ parallel_for(pool, 1_000_000, 8192, proc(start: int, end: int, data: Data), data
 
 ![parallel_for speed-up](./parallel_for.png)
 
-## lazy_pool/parallel_quicksort
+## parallel_quicksort
 
 Example of using lazy_pool to implement a parallel quicksort.
 
