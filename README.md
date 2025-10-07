@@ -56,6 +56,25 @@ Like simple_pool but uses atomic spinlock instead of notifier.
 
 Did not perform better than lazy_pool.
 
+## lazy_pool/tasks
+
+Build a DAG of job dependencies.
+
+```odin
+tasks : TasksConfig(num_nodes, max_dependencies)
+
+// add jobs with optional dependencies
+a := tasks_add(&tasks, jobA)          // no dependencies
+b := tasks_add(&tasks, fnB, ctxB)     // pass job function and data directly
+c := tasks_add(&tasks, jobC, a)       // c must run after a
+d := tasks_add(&tasks, jobD, a, b, c) // any number of dependencies
+
+// define dependencies separately
+after(&tasks, c, d) // run d after c
+
+ok := tasks_run(&tasks, pool)
+```
+
 ## lazy_pool/parallel_for
 
 Run `for` loops chunked and multithreaded using the lazy_pool.
