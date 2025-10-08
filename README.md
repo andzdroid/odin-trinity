@@ -8,23 +8,25 @@ Work-stealing job scheduler/thread pool.
 
 ```odin
 pool := new(LazyPool)
-pool_init(pool, workers)
+pool_init(pool, num_workers)
 pool_start(pool)
 
 // run one job
-spawn(pool, make_job(job_fn, &args))
+job := make_job(job_fn, &args)
+spawn(pool, job)
+// or: spawn(pool, job_fn, &args)
 
 // run multiple jobs and wait for all to finish
 group := JobGroup{pool = pool}
-spawn(&group, make_job(job_fn, &args))
-spawn(&group, make_job(job_fn, &args))
-spawn(&group, make_job(job_fn, &args))
+spawn(&group, job_fn, &args)
+spawn(&group, job_fn, &args)
+spawn(&group, job_fn, &args)
 group_wait(&group)
 
 job_fn :: proc(args: ^JobArgs) {
   if args.spawn_more {
     // run more jobs from within jobs
-    spawn(make_job(worker, &args))
+    spawn(worker, &args)
   }
 }
 ```
@@ -33,7 +35,7 @@ Better performance than [core:thread.Pool](https://pkg.odin-lang.org/core/thread
 
 - you want to run many small jobs, mostly taking <100 microseconds
   - (to take advantage of lock-free data structures)
-- your jobs produce more jobs
+- your jobs produce more jobs or your jobs take different amounts of time to run
   - (to take advantage of work stealing)
 
 You can get improved multithreading performance like this (with `-o:speed`):

@@ -34,10 +34,13 @@ tasks_add :: proc {
 tasks_add_job :: proc(tasks: ^TasksConfig($N, $D), job: Job, deps: ..TaskId) -> TaskId {
 	id := tasks.node_count
 	tasks.node_count += 1
-	tasks.nodes[id] = TaskNode(N, D) {
-		job = job,
-		ctx = {tasks = tasks, id = TaskId(id)},
+	store(&tasks.nodes[id].pending, 0, .Relaxed)
+	tasks.nodes[id].job = job
+	tasks.nodes[id].ctx = {
+		tasks = tasks,
+		id    = TaskId(id),
 	}
+	tasks.nodes[id].dependencies_count = 0
 	for dep in deps {
 		after(tasks, dep, TaskId(id))
 	}

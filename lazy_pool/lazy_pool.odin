@@ -103,12 +103,19 @@ pool_destroy :: proc(pool: ^LazyPool, allocator := context.allocator) {
 
 spawn :: proc {
 	pool_submit,
+	pool_submit_fn,
 	worker_submit,
+	worker_submit_fn,
 	group_submit,
+	group_submit_fn,
 }
 
 // Enqueue a job onto the global job queue.
 pool_submit :: proc(pool: ^LazyPool, j: Job) -> bool {
+	if current_worker != nil && current_worker.pool == pool {
+		return worker_submit(j)
+	}
+
 	if j.group != nil {
 		add(&j.group.pending, 1, .Relaxed)
 	}
@@ -119,6 +126,11 @@ pool_submit :: proc(pool: ^LazyPool, j: Job) -> bool {
 		add(&j.group.pending, -1, .Relaxed)
 	}
 	return ok
+}
+
+pool_submit_fn :: proc(pool: ^LazyPool, fn: proc(_: ^$T), data: ^T) -> bool {
+	j := make_job(fn, data)
+	return pool_submit(pool, j)
 }
 
 // Enqueue a job onto the current worker's local job queue.
@@ -138,6 +150,11 @@ worker_submit :: proc(j: Job) -> bool {
 	return ok
 }
 
+worker_submit_fn :: proc(fn: proc(_: ^$T), data: ^T) -> bool {
+	j := make_job(fn, data)
+	return worker_submit(j)
+}
+
 // Enqueue a job as part of a job group.
 // Will automatically pick between pool_submit and worker_submit.
 group_submit :: proc(group: ^JobGroup, j: Job) -> bool {
@@ -148,6 +165,11 @@ group_submit :: proc(group: ^JobGroup, j: Job) -> bool {
 	} else {
 		return worker_submit(j)
 	}
+}
+
+group_submit_fn :: proc(group: ^JobGroup, fn: proc(_: ^$T), data: ^T) -> bool {
+	j := make_job(fn, data)
+	return group_submit(group, j)
 }
 
 @(private = "file")
