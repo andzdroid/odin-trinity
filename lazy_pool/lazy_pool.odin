@@ -301,7 +301,6 @@ wait_for_task :: proc(current_job: ^Job, has_job: ^bool, worker: ^Worker) -> boo
 	old_epoch := notifier.prepare_wait(&pool.global_wakeup)
 
 	if !mpmc.mpmc_is_empty(&pool.tasks) {
-		notifier.cancel_wait(&pool.global_wakeup)
 		if job_value, ok := mpmc.mpmc_dequeue(&pool.tasks); ok {
 			current_job^ = job_value
 			has_job^ = true
@@ -313,14 +312,12 @@ wait_for_task :: proc(current_job: ^Job, has_job: ^bool, worker: ^Worker) -> boo
 	}
 
 	if !load(&pool.running, .Acquire) {
-		notifier.cancel_wait(&pool.global_wakeup)
 		notifier.notify_all(&pool.global_wakeup)
 		add(&pool.num_thieves, -1, .Acq_Rel)
 		return false
 	}
 
 	if add(&pool.num_thieves, -1, .Acq_Rel) == 1 && load(&pool.num_actives, .Acquire) > 0 {
-		notifier.cancel_wait(&pool.global_wakeup)
 		return true
 	}
 
@@ -335,7 +332,6 @@ group_wait :: proc(g: ^JobGroup) {
 		}
 		epoch := notifier.prepare_wait(&g.wake)
 		if load(&g.pending, .Acquire) == 0 {
-			notifier.cancel_wait(&g.wake)
 			break
 		}
 		notifier.commit_wait(&g.wake, epoch)
