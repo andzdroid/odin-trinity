@@ -5,7 +5,7 @@ import "core:sync"
 load :: sync.atomic_load_explicit
 store :: sync.atomic_store_explicit
 cas_strong :: sync.atomic_compare_exchange_strong_explicit
-cas_weak :: sync.atomic_compare_exchange_weak_explicit
+fence :: sync.atomic_thread_fence
 
 // https://www.dre.vanderbilt.edu/~schmidt/PDF/work-stealing-dequeue.pdf
 // N must be a power of 2
@@ -52,6 +52,7 @@ deque_push_many :: proc "contextless" (deque: ^$D/Deque($T, $N), values: []T) ->
 deque_pop :: proc "contextless" (deque: ^$D/Deque($T, $N)) -> (value: T, ok: bool) {
 	bottom := load(&deque.bottom, .Relaxed) - 1
 	store(&deque.bottom, bottom, .Relaxed)
+	fence(.Seq_Cst)
 	top := load(&deque.top, .Acquire)
 
 	// empty
@@ -75,6 +76,7 @@ deque_pop :: proc "contextless" (deque: ^$D/Deque($T, $N)) -> (value: T, ok: boo
 
 deque_steal :: proc "contextless" (deque: ^$D/Deque($T, $N)) -> (value: T, ok: bool) {
 	top := load(&deque.top, .Acquire)
+	fence(.Seq_Cst)
 	bottom := load(&deque.bottom, .Acquire)
 
 	// empty
@@ -83,7 +85,7 @@ deque_steal :: proc "contextless" (deque: ^$D/Deque($T, $N)) -> (value: T, ok: b
 	}
 
 	out := deque.buf[top & i64(N - 1)]
-	_, success := cas_weak(&deque.top, top, top + 1, .Seq_Cst, .Seq_Cst)
+	_, success := cas_strong(&deque.top, top, top + 1, .Seq_Cst, .Relaxed)
 	return out, success
 }
 
