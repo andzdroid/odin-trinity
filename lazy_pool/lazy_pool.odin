@@ -71,6 +71,8 @@ LazyPool :: struct {
 }
 
 pool_init :: proc(pool: ^LazyPool, num_workers: int, allocator := context.allocator) {
+	assert(num_workers > 0, "lazy_pool.pool_init requires at least one worker")
+
 	mpmc.mpmc_init(&pool.tasks)
 
 	pool.workers = make([]Worker, num_workers, allocator)
@@ -141,6 +143,10 @@ worker_submit :: proc(j: Job) -> bool {
 		return false
 	}
 	if j.group != nil {
+		assert(
+			j.group.pool == current_worker.pool,
+			"lazy_pool.worker_submit requires the job group to belong to the current worker pool",
+		)
 		add(&j.group.pending, 1, .Relaxed)
 	}
 	ok := deque.deque_push(&current_worker.pool.deques[current_worker.id], j)
@@ -158,13 +164,12 @@ worker_submit_fn :: proc(fn: proc(_: ^$T), data: ^T) -> bool {
 // Enqueue a job as part of a job group.
 // Will automatically pick between pool_submit and worker_submit.
 group_submit :: proc(group: ^JobGroup, j: Job) -> bool {
+	assert(group != nil, "lazy_pool.group_submit requires a group")
+	assert(group.pool != nil, "lazy_pool.group_submit requires an initialized group")
+
 	j := j
 	j.group = group
-	if current_worker == nil {
-		return pool_submit(group.pool, j)
-	} else {
-		return worker_submit(j)
-	}
+	return pool_submit(group.pool, j)
 }
 
 group_submit_fn :: proc(group: ^JobGroup, fn: proc(_: ^$T), data: ^T) -> bool {
