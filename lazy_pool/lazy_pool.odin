@@ -1,8 +1,8 @@
 package lazy_pool
 
-import deque "../deque"
-import mpmc "../mpmc"
-import notifier "../notifier"
+import "../deque"
+import "../mpmc"
+import "../notifier"
 import "core:sync"
 import "core:thread"
 
@@ -57,6 +57,12 @@ LazyPool :: struct {
 		num_thieves: i64,
 	},
 	using _:     struct #align (64) {
+		pending_jobs: i64,
+	},
+	using _:     struct #align (64) {
+		finishing: bool,
+	},
+	using _:     struct #align (64) {
 		global_wakeup: notifier.Notifier,
 	},
 	using _:     struct #align (64) {
@@ -79,8 +85,10 @@ pool_init :: proc(pool: ^LazyPool, num_workers: int, allocator := context.alloca
 	pool.deques = make([]WorkerDeque, num_workers, allocator)
 	pool.threads = make([]^thread.Thread, num_workers, allocator)
 	pool.running = true
+	pool.finishing = false
 	pool.num_actives = 0
 	pool.num_thieves = 0
+	pool.pending_jobs = 0
 	pool.steal_bound = 2 * (num_workers + 1)
 	pool.yield_bound = 100
 
@@ -119,13 +127,23 @@ pool_submit :: proc(pool: ^LazyPool, j: Job) -> bool {
 	}
 
 	if j.group != nil {
+		assert(
+			j.group.pool == pool,
+			"lazy_pool.pool_submit requires the job group to belong to the submitted pool",
+		)
+	}
+
+	if !begin_submit(pool, false) {
+		return false
+	}
+	if j.group != nil {
 		add(&j.group.pending, 1, .Relaxed)
 	}
 	ok := mpmc.mpmc_enqueue(&pool.tasks, j)
 	if ok {
 		notifier.notify_one(&pool.global_wakeup)
-	} else if j.group != nil {
-		add(&j.group.pending, -1, .Relaxed)
+	} else {
+		cancel_submit(pool, j)
 	}
 	return ok
 }
@@ -147,11 +165,18 @@ worker_submit :: proc(j: Job) -> bool {
 			j.group.pool == current_worker.pool,
 			"lazy_pool.worker_submit requires the job group to belong to the current worker pool",
 		)
+	}
+
+	pool := current_worker.pool
+	if !begin_submit(pool, true) {
+		return false
+	}
+	if j.group != nil {
 		add(&j.group.pending, 1, .Relaxed)
 	}
-	ok := deque.deque_push(&current_worker.pool.deques[current_worker.id], j)
-	if !ok && j.group != nil {
-		add(&j.group.pending, -1, .Relaxed)
+	ok := deque.deque_push(&pool.deques[current_worker.id], j)
+	if !ok {
+		cancel_submit(pool, j)
 	}
 	return ok
 }
@@ -166,7 +191,6 @@ worker_submit_fn :: proc(fn: proc(_: ^$T), data: ^T) -> bool {
 group_submit :: proc(group: ^JobGroup, j: Job) -> bool {
 	assert(group != nil, "lazy_pool.group_submit requires a group")
 	assert(group.pool != nil, "lazy_pool.group_submit requires an initialized group")
-
 	j := j
 	j.group = group
 	return pool_submit(group.pool, j)
@@ -196,6 +220,35 @@ worker_loop :: proc(thread: ^thread.Thread) {
 }
 
 @(private = "file")
+begin_submit :: proc(pool: ^LazyPool, allow_while_finishing: bool) -> bool {
+	add(&pool.pending_jobs, 1, .Seq_Cst)
+	if !load(&pool.running, .Seq_Cst) ||
+	   (!allow_while_finishing && load(&pool.finishing, .Seq_Cst)) {
+		add(&pool.pending_jobs, -1, .Seq_Cst)
+		return false
+	}
+	return true
+}
+
+@(private = "file")
+cancel_submit :: proc(pool: ^LazyPool, job: Job) {
+	if job.group != nil {
+		add(&job.group.pending, -1, .Relaxed)
+	}
+	add(&pool.pending_jobs, -1, .Seq_Cst)
+}
+
+@(private = "file")
+finish_job :: proc(pool: ^LazyPool, job: ^Job) {
+	if job.group != nil {
+		if add(&job.group.pending, -1, .Release) == 1 {
+			notifier.notify_all(&job.group.wake)
+		}
+	}
+	add(&pool.pending_jobs, -1, .Seq_Cst)
+}
+
+@(private = "file")
 exploit_task :: proc(current_job: ^Job, has_job: ^bool, worker: ^Worker) {
 	pool := worker.pool
 	worker_deque := &pool.deques[worker.id]
@@ -216,11 +269,7 @@ exploit_task :: proc(current_job: ^Job, has_job: ^bool, worker: ^Worker) {
 
 	for {
 		current_job.run(current_job.ctx, current_job.data)
-		if current_job.group != nil {
-			if add(&current_job.group.pending, -1, .Release) == 1 {
-				notifier.notify_all(&current_job.group.wake)
-			}
-		}
+		finish_job(pool, current_job)
 		if next_job, ok2 := deque.deque_pop(worker_deque); ok2 {
 			current_job^ = next_job
 			has_job^ = true
@@ -350,26 +399,31 @@ pool_start :: proc(pool: ^LazyPool) {
 }
 
 pool_stop :: proc(pool: ^LazyPool) {
-	store(&pool.running, false, .Release)
+	store(&pool.running, false, .Seq_Cst)
 
 	notifier.notify_all(&pool.global_wakeup)
 
-	for t in pool.threads {
-		thread.join(t)
-		thread.destroy(t)
+	for i in 0 ..< len(pool.threads) {
+		t := pool.threads[i]
+		if t != nil {
+			thread.join(t)
+			thread.destroy(t)
+			pool.threads[i] = nil
+		}
 	}
 }
 
 pool_finish :: proc(pool: ^LazyPool) {
-	for {
-		task := mpmc.mpmc_dequeue(&pool.tasks) or_break
-		task.run(task.ctx, task.data)
-		if task.group != nil {
-			if add(&task.group.pending, -1, .Release) == 1 {
-				notifier.notify_all(&task.group.wake)
-			}
-		}
+	assert(
+		current_worker == nil || current_worker.pool != pool,
+		"lazy_pool.pool_finish cannot be called from one of its workers",
+	)
+
+	store(&pool.finishing, true, .Seq_Cst)
+	for load(&pool.pending_jobs, .Seq_Cst) > 0 {
+		notifier.notify_all(&pool.global_wakeup)
+		thread.yield()
 	}
 
-	store(&pool.running, false, .Release)
+	pool_stop(pool)
 }
